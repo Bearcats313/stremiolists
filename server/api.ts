@@ -11,7 +11,9 @@ import {
   setPassword,
   verifyPassword,
 } from './auth.js';
-import { matchLines } from './importer.js';
+import { extractEntries, fetchListText, matchLines, resolveEntries } from './importer.js';
+import { historyStatus, syncWatchHistory } from './history.js';
+import { refreshSuggestions, setCertCaps, suggestionsStatus } from './suggestions.js';
 import {
   addItems,
   allLists,
@@ -230,7 +232,25 @@ export function registerApiRoutes(app: FastifyInstance) {
         return reply.code(400).send({ error: 'Enter your Stremio email and password, or an auth key' });
       }
       await syncToStremio().catch(() => {}); // the status shows any error
+      // Pull watch history and build suggestions in the background.
+      void syncWatchHistory()
+        .then(() => refreshSuggestions())
+        .catch((err) => log('Watch history sync failed', err));
       return stremioStatus();
+    });
+
+    priv.get('/api/dashboard', async () => ({
+      stremio: stremioStatus(),
+      history: historyStatus(),
+      suggestions: suggestionsStatus(),
+      trendingRefreshedAt: Number(getSetting('trending_refreshed_at')) || null,
+      lastBackup: getSetting('last_backup'),
+    }));
+
+    priv.post<{ Body: { movie?: string | null; series?: string | null } }>('/api/settings/suggestions', async (req) => {
+      setCertCaps(req.body ?? {});
+      void refreshSuggestions().catch((err) => log('Suggestions refresh failed', err));
+      return suggestionsStatus();
     });
 
     priv.post('/api/stremio/disconnect', async () => {
@@ -363,6 +383,28 @@ export function registerApiRoutes(app: FastifyInstance) {
       },
     );
 
+    // Import from MDBList or any list export: a link, or JSON/CSV/text containing IMDb or TMDB IDs
+    priv.post<{ Body: { url?: string; text?: string } }>('/api/import/external', { bodyLimit: 6 * 1024 * 1024 }, async (req) => {
+      let text = req.body?.text ?? '';
+      if (req.body?.url?.trim()) {
+        try {
+          text = await fetchListText(req.body.url);
+        } catch (err: any) {
+          throw new ListError(`Couldn't load that link: ${err.message}`);
+        }
+      }
+      const entries = extractEntries(text);
+      if (!entries.length) throw new ListError('No IMDb or TMDB IDs found in that list');
+      const results = await resolveEntries(entries);
+      const badges = listMembership(results.flatMap((r) => (r.match ? [r.match] : [])));
+      return {
+        results: results.map((r) => ({
+          ...r,
+          match: r.match && { ...r.match, inLists: badges.get(`${r.match.mediaType}:${r.match.tmdbId}`) ?? [] },
+        })),
+      };
+    });
+
     // Paste import
     priv.post<{ Body: { text?: string; type?: string } }>('/api/import/match', async (req) => {
       const type = req.body?.type === 'movie' || req.body?.type === 'series' ? req.body.type : 'any';
@@ -402,7 +444,11 @@ export function registerApiRoutes(app: FastifyInstance) {
     priv.post<{ Params: { id: string } }>('/api/lists/:id/refresh', async (req) => {
       const l = getList(Number(req.params.id));
       if (l.system_key === 'trending') await refreshTrending();
-      else await refreshSmartList(l);
+      else if (l.system_key === 'suggestions') {
+        // Fresh history first; if Stremio is unreachable, suggest from what's already known.
+        if (stremioStatus().connected) await syncWatchHistory().catch(() => {});
+        await refreshSuggestions();
+      } else await refreshSmartList(l);
       return toSummary(getList(l.id));
     });
 
@@ -449,7 +495,9 @@ export function registerApiRoutes(app: FastifyInstance) {
         list: toSummary(l),
         items: listItems(l).map(itemJson),
         hiddenItems: l.kind === 'smart' ? hiddenItems(l.id).map(itemJson) : [],
-        refreshedAt: l.kind === 'smart' ? smartRefreshedAt(l.id) : null,
+        refreshedAt:
+          l.kind === 'smart' ? smartRefreshedAt(l.id) : l.system_key === 'suggestions' ? suggestionsStatus().refreshedAt : null,
+        suggestions: l.system_key === 'suggestions' ? { ...suggestionsStatus(), history: historyStatus() } : undefined,
       };
     });
 

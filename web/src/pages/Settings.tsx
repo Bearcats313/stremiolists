@@ -86,7 +86,11 @@ export function Settings() {
         </button>
       </section>
 
+      <Dashboard />
+
       <StremioAccount />
+
+      <SuggestionSettings />
 
       <section className="card">
         <h2>Trending services</h2>
@@ -260,6 +264,116 @@ function StremioAccount() {
           </div>
         </>
       )}
+    </section>
+  );
+}
+
+interface DashboardData {
+  stremio: StremioStatus;
+  history: { syncedAt: number | null; count: number; error: string | null };
+  suggestions: { refreshedAt: number | null; seedCount: number; error: string | null; caps: { movie: string | null; series: string | null } };
+  trendingRefreshedAt: number | null;
+  lastBackup: string | null;
+}
+
+function Dashboard() {
+  const [d, setD] = useState<DashboardData | null>(null);
+  useEffect(() => {
+    api<DashboardData>('/api/dashboard').then(setD).catch(() => {});
+  }, []);
+  if (!d) return null;
+
+  const row = (label: string, value: string, error?: string | null) => (
+    <tr>
+      <th scope="row">{label}</th>
+      <td>
+        {value}
+        {error && <div className="error small">{error}</div>}
+      </td>
+    </tr>
+  );
+
+  return (
+    <section className="card">
+      <h2>Status</h2>
+      <table className="status-table">
+        <tbody>
+          {row(
+            'Watch history',
+            d.stremio.connected
+              ? `${d.history.count} watched titles · synced ${timeAgo(d.history.syncedAt)}`
+              : 'Stremio not connected; using the Watched list',
+            d.history.error,
+          )}
+          {row(
+            'Suggestions',
+            `From ${d.suggestions.seedCount} recent watches · refreshed ${timeAgo(d.suggestions.refreshedAt)}`,
+            d.suggestions.error,
+          )}
+          {row('Stremio rows', d.stremio.connected ? `Synced ${timeAgo(d.stremio.lastSync)}` : 'Not connected', d.stremio.lastError)}
+          {row('Trending', `Refreshed ${timeAgo(d.trendingRefreshedAt)}`)}
+          {row('Backup', d.lastBackup ?? 'not yet')}
+        </tbody>
+      </table>
+    </section>
+  );
+}
+
+const MOVIE_CERTS = ['G', 'PG', 'PG-13', 'R', 'NC-17'];
+const TV_CERTS = ['TV-Y', 'TV-Y7', 'TV-G', 'TV-PG', 'TV-14', 'TV-MA'];
+
+function SuggestionSettings() {
+  const [caps, setCaps] = useState<{ movie: string | null; series: string | null } | null>(null);
+  const toast = useToast();
+
+  useEffect(() => {
+    api<DashboardData>('/api/dashboard')
+      .then((d) => setCaps(d.suggestions.caps))
+      .catch(() => {});
+  }, []);
+
+  async function save(next: { movie: string | null; series: string | null }) {
+    setCaps(next);
+    try {
+      await api('/api/settings/suggestions', { body: next });
+      toast('Saved. Suggestions are rebuilding.');
+    } catch (e: any) {
+      toast(e.message);
+    }
+  }
+
+  if (!caps) return null;
+  return (
+    <section className="card">
+      <h2>Suggestions</h2>
+      <p className="muted small">
+        Built daily from titles watched in Stremio (or added to the Watched list), leaving out anything watched or already in the Library.
+        A rating cap also leaves out titles with no US rating.
+      </p>
+      <div className="filter-row">
+        <label className="field">
+          <span>Movies rated at most</span>
+          <select value={caps.movie ?? ''} onChange={(e) => save({ ...caps, movie: e.target.value || null })}>
+            <option value="">No cap</option>
+            {MOVIE_CERTS.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
+          <span>TV rated at most</span>
+          <select value={caps.series ?? ''} onChange={(e) => save({ ...caps, series: e.target.value || null })}>
+            <option value="">No cap</option>
+            {TV_CERTS.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
     </section>
   );
 }

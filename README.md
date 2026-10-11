@@ -6,8 +6,7 @@ Built so far:
 
 - **Phase 1:** Library and custom lists, the browse/multiselect builder, paste import, seasonal lists, and the addon's manifest and catalogs.
 - **Phase 2:** row ordering, a Trending row with a streaming-service filter, smart lists saved from Browse filters, and Sync to Stremio.
-
-Suggestions (phase 3) are not built yet.
+- **Phase 3:** watch history from the Stremio account, a Suggestions row, a status dashboard in Settings, and importing lists from MDBList or other exports.
 
 ## Deploy with Portainer
 
@@ -35,6 +34,17 @@ Data lives in the `lists-data` volume at `/data`: `lists.db` plus nightly backup
 - **Trending** shows the most popular titles this week on each streaming service in the US (TMDB discover filtered by watch provider, refreshed every 6 hours). The row has a filter for each service plus All; pick which services appear in Settings.
 - **Smart lists** are saved from a set of Browse filters (Browse → Filters → Save as smart list). They refresh daily, keep the most popular N titles, and can't be edited title by title, but you can hide titles from them.
 - Stremio caches the addon's list of rows. Item changes in an existing row show within about five minutes. New, renamed, reordered or newly in-season rows need either the **Stremio account connected** in Settings, which pushes the change to the account's installed addons automatically, or a reinstall. Devices pick up a pushed change the next time Stremio refreshes its addons, usually on restart.
+
+- **Suggestions** are rebuilt daily from TMDB recommendations for the 25 most recently watched titles. Watched means Stremio marked it watched, counted a full play, or (for series) any episode was played; titles added to the **Watched** list count too, and keep suggestions working if the Stremio library can't be read. Anything watched or already in the Library is left out. Settings can cap suggestions by US rating.
+
+## Importing lists
+
+**Import** takes either titles (one per line, optionally with a year, or bare IMDb IDs like `tt0107120`) or a list from elsewhere:
+
+- a public MDBList list link (`https://mdblist.com/lists/<user>/<list>`); the app fetches the list's `/json` export
+- a JSON or CSV export file from MDBList, Trakt, IMDb or similar; anything containing IMDb or TMDB IDs works
+
+Either way the matches show up for review before being added to lists.
 
 The Stremio connection uses Stremio's unofficial account API (`api.strem.io`). The password is used once to get a session key and is not stored. If that API changes, sync stops working and the UI shows the error; reinstalling the addon still works.
 

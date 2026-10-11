@@ -26,6 +26,25 @@ export function Import() {
   const [error, setError] = useState('');
   const [adding, setAdding] = useState(false);
   const [drawer, setDrawer] = useState<Title | null>(null);
+  const [source, setSource] = useState<'titles' | 'external'>('titles');
+  const [url, setUrl] = useState('');
+  const [fileText, setFileText] = useState('');
+  const [fileName, setFileName] = useState('');
+
+  async function importExternal() {
+    setBusy(true);
+    setError('');
+    try {
+      const r = await api<{ results: MatchRow[] }>('/api/import/external', {
+        body: url.trim() ? { url: url.trim() } : { text: fileText },
+      });
+      setRows(r.results.map((m) => ({ ...m, chosen: m.match, checked: !!m.match })));
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function match() {
     setBusy(true);
@@ -50,8 +69,55 @@ export function Import() {
   if (!rows) {
     return (
       <div className="page narrow">
-        <h1>Paste import</h1>
-        <p className="muted">One title per line. Add the year in parentheses to pin the right version, e.g. “Hocus Pocus (1993)”.</p>
+        <h1>Import</h1>
+        <div className="segmented" role="tablist">
+          <button type="button" role="tab" aria-selected={source === 'titles'} onClick={() => setSource('titles')}>
+            Paste titles
+          </button>
+          <button type="button" role="tab" aria-selected={source === 'external'} onClick={() => setSource('external')}>
+            MDBList or file
+          </button>
+        </div>
+        {source === 'external' ? (
+          <>
+            <p className="muted">
+              Paste a public MDBList list link, or pick an export file (JSON or CSV from MDBList, Trakt, IMDb and similar). Anything with
+              IMDb or TMDB IDs works.
+            </p>
+            <label className="field">
+              <span>List link</span>
+              <input
+                type="url"
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                placeholder="https://mdblist.com/lists/username/list-name"
+              />
+            </label>
+            <label className="field">
+              <span>Or a file</span>
+              <input
+                type="file"
+                accept=".json,.csv,.txt,application/json,text/csv,text/plain"
+                onChange={async (e) => {
+                  const f = e.target.files?.[0];
+                  if (!f) return;
+                  setFileName(f.name);
+                  setFileText(await f.text());
+                  setUrl('');
+                }}
+              />
+            </label>
+            {fileName && !url && <p className="muted small">Using {fileName}</p>}
+            <div className="row-gap">
+              <button type="button" className="btn primary" disabled={busy || (!url.trim() && !fileText)} onClick={importExternal}>
+                {busy ? 'Loading…' : 'Load list'}
+              </button>
+            </div>
+            {error && <p className="error">{error}</p>}
+          </>
+        ) : (
+        <>
+        <p className="muted">One title or IMDb ID (tt…) per line. Add the year in parentheses to pin the right version, e.g. “Hocus Pocus (1993)”.</p>
         <textarea
           className="paste"
           value={text}
@@ -73,6 +139,8 @@ export function Import() {
           </button>
         </div>
         {error && <p className="error">{error}</p>}
+        </>
+        )}
       </div>
     );
   }

@@ -245,3 +245,11 @@ export async function fetchDetails(type: MediaType, id: number): Promise<TitleDe
     providers,
   };
 }
+
+/** Look up a TMDB title from an IMDb ID. `prefer` breaks the tie when the ID matches both a movie and a show. */
+export async function findByImdb(imdbId: string, prefer?: MediaType): Promise<TitleSummary | null> {
+  const res = await tmdbGet(`/find/${imdbId}`, { external_source: 'imdb_id' }, TTL.details);
+  const movie = res.movie_results?.[0] ? summarize(res.movie_results[0], 'movie') : null;
+  const show = res.tv_results?.[0] ? summarize(res.tv_results[0], 'series') : null;
+  return prefer === 'series' ? (show ?? movie) : (movie ?? show);
+}

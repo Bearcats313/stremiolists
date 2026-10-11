@@ -5,6 +5,8 @@ import { db, getSetting, setSetting } from './db.js';
 import { purgeExpiredSessions } from './auth.js';
 import { refreshArchived } from './lists.js';
 import { refreshStaleSmartLists } from './smart.js';
+import { syncWatchHistory } from './history.js';
+import { refreshSuggestions, suggestionsStale } from './suggestions.js';
 import { autoSync } from './stremio.js';
 import { purgeExpiredCache, tmdbKey } from './tmdb.js';
 import { refreshTrending, trendingStale } from './trending.js';
@@ -46,6 +48,18 @@ async function tick(log: (msg: string, err?: unknown) => void) {
       );
     }
     await refreshStaleSmartLists(log);
+    if (suggestionsStale()) {
+      if (getSetting('stremio_auth_key')) {
+        await syncWatchHistory().then(
+          (n) => log(`Synced ${n} watched titles from Stremio`),
+          (err) => log('Watch history sync failed; suggesting from the last known history', err),
+        );
+      }
+      await refreshSuggestions().then(
+        (n) => log(`Suggestions refreshed (${n})`),
+        (err) => log('Suggestions refresh failed', err),
+      );
+    }
   }
   // Seasonal lists coming into season, trending filling in, etc. change the rows; push them.
   await autoSync(log);

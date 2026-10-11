@@ -8,7 +8,7 @@ const API = (process.env.STREMIO_API_URL ?? 'https://api.strem.io/api').replace(
 
 export class StremioError extends Error {}
 
-async function call<T = any>(method: string, body: Record<string, unknown>): Promise<T> {
+export async function call<T = any>(method: string, body: Record<string, unknown>): Promise<T> {
   let res: Response;
   try {
     res = await fetch(`${API}/${method}`, {
