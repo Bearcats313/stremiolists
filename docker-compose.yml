@@ -1,0 +1,19 @@
+# Portainer Git-backed stack. Set the variables in the stack's environment section.
+services:
+  lists:
+    build: .
+    image: stremio-personal-lists:latest
+    container_name: stremio-lists
+    restart: unless-stopped
+    ports:
+      - "7000:7000"
+    environment:
+      TMDB_API_KEY: ${TMDB_API_KEY:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      PUBLIC_URL: ${PUBLIC_URL:-https://lists.bearcatbox.xyz}
+      TZ: ${TZ:-America/New_York}
+    volumes:
+      - lists-data:/data
+
+volumes:
+  lists-data:
