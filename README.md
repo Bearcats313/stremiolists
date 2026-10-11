@@ -7,12 +7,13 @@ This is **Phase 1**: Library and custom lists, the browse/multiselect builder, p
 ## Deploy with Portainer
 
 1. In Portainer, add a stack from this Git repo using `docker-compose.yml`. The image is built on the host from the repo (`pull_policy: build`), so leave "Re-pull image" off; there's nothing in a registry to pull.
-2. Set environment variables on the stack:
+2. Set environment variables on the stack (see `.env.example`):
    - `TMDB_API_KEY`: free key from https://www.themoviedb.org/settings/api (the v3 key or the v4 read access token both work)
    - `ADMIN_PASSWORD`: web UI password (only used on first run; change it later in Settings)
-   - `PUBLIC_URL`: the HTTPS hostname on the Cloudflare tunnel, e.g. `https://lists.bearcatbox.xyz`
+   - `LISTS_HOST`: the public hostname, e.g. `lists.bearcatbox.xyz`
+   - `TRAEFIK_NETWORK`: the existing Docker network Traefik is on (default `proxy`)
    - `TZ`: defaults to `America/New_York`
-3. Point the Cloudflare tunnel hostname at `http://<host>:7000`.
+3. The stack's Traefik labels match the other homelab services: `http` redirects to `https`, which serves `LISTS_HOST` with the `http` certresolver and forwards to port 7000. Make sure the cloudflared tunnel sends that hostname to Traefik, the same way as your other services.
 4. Open the hostname, log in, and go to **Settings → Install in Stremio**.
 
 If `TMDB_API_KEY` or `ADMIN_PASSWORD` is left blank, the first visit shows a setup form for them instead.

@@ -8,14 +8,39 @@ services:
     container_name: stremio-lists
     restart: unless-stopped
     ports:
+      # Direct LAN access; remove if everything goes through Traefik.
       - "7000:7000"
     environment:
       TMDB_API_KEY: ${TMDB_API_KEY:-}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
-      PUBLIC_URL: ${PUBLIC_URL:-https://lists.bearcatbox.xyz}
+      PUBLIC_URL: https://${LISTS_HOST:-lists.bearcatbox.xyz}
       TZ: ${TZ:-America/New_York}
     volumes:
       - lists-data:/data
+    networks:
+      - default
+      - proxy
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=${TRAEFIK_NETWORK:-proxy}
+      # HTTP router redirects to HTTPS
+      - traefik.http.middlewares.stremio-lists-https-redirect.redirectscheme.scheme=https
+      - traefik.http.routers.stremio-lists.entrypoints=http
+      - traefik.http.routers.stremio-lists.rule=Host(`${LISTS_HOST:-lists.bearcatbox.xyz}`)
+      - traefik.http.routers.stremio-lists.middlewares=stremio-lists-https-redirect
+      # HTTPS router
+      - traefik.http.routers.stremio-lists-secure.entrypoints=https
+      - traefik.http.routers.stremio-lists-secure.rule=Host(`${LISTS_HOST:-lists.bearcatbox.xyz}`)
+      - traefik.http.routers.stremio-lists-secure.service=stremio-lists
+      - traefik.http.routers.stremio-lists-secure.tls=true
+      - traefik.http.routers.stremio-lists-secure.tls.certresolver=http
+      - traefik.http.services.stremio-lists.loadbalancer.server.port=7000
+
+networks:
+  proxy:
+    # The existing Docker network that Traefik is attached to.
+    name: ${TRAEFIK_NETWORK:-proxy}
+    external: true
 
 volumes:
   lists-data:
