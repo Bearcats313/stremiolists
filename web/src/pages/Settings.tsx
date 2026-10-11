@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api } from '../api';
+import { api, timeAgo, type StremioStatus } from '../api';
 import { useToast } from '../state';
 
 interface SettingsData {
@@ -9,6 +9,9 @@ interface SettingsData {
   region: string;
   tmdbKeyFromEnv: boolean;
   lastBackup: string | null;
+  enabledServices: string[];
+  allServices: string[];
+  trendingRefreshedAt: number | null;
 }
 
 export function Settings() {
@@ -75,12 +78,46 @@ export function Settings() {
         </div>
         <input className="url" readOnly value={s.manifestUrl} onFocus={(e) => e.target.select()} />
         <p className="muted small">
-          New lists and renamed lists show up after Stremio refreshes the addon, which can mean reinstalling it until Sync to Stremio arrives
-          in phase 2. Edits to existing lists show up within about five minutes.
+          Edits to existing rows show up within about five minutes. New, renamed or reordered rows need the Stremio account connected below,
+          or a reinstall.
         </p>
         <button type="button" className="btn danger" onClick={regenerate}>
           Regenerate URL
         </button>
+      </section>
+
+      <StremioAccount />
+
+      <section className="card">
+        <h2>Trending services</h2>
+        <p className="muted small">
+          Services in the Trending row's filter. “All” combines the checked ones. Last refreshed {timeAgo(s.trendingRefreshedAt)}.
+        </p>
+        <div className="chips">
+          {s.allServices.map((name) => {
+            const on = s.enabledServices.includes(name);
+            return (
+              <button
+                key={name}
+                type="button"
+                className="chip"
+                aria-pressed={on}
+                onClick={async () => {
+                  const next = on ? s.enabledServices.filter((x) => x !== name) : [...s.enabledServices, name];
+                  try {
+                    const r = await api<{ enabledServices: string[] }>('/api/settings/rows', { body: { enabledServices: next } });
+                    setS((x) => x && { ...x, enabledServices: r.enabledServices });
+                    toast('Saved. Trending rebuilds in the background over the next minute or two.');
+                  } catch (e: any) {
+                    toast(e.message);
+                  }
+                }}
+              >
+                {name}
+              </button>
+            );
+          })}
+        </div>
       </section>
 
       <section className="card">
@@ -130,5 +167,99 @@ export function Settings() {
         Log out
       </button>
     </div>
+  );
+}
+
+function StremioAccount() {
+  const [st, setSt] = useState<StremioStatus | null>(null);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [authKey, setAuthKey] = useState('');
+  const [useKey, setUseKey] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const toast = useToast();
+
+  useEffect(() => {
+    api<StremioStatus>('/api/stremio').then(setSt).catch(() => {});
+  }, []);
+
+  async function run(path: string, body: Record<string, string> = {}, done?: string) {
+    setBusy(true);
+    try {
+      const r = await api<StremioStatus>(path, { body });
+      setSt(r);
+      setPassword('');
+      setAuthKey('');
+      if (r.lastError) toast(`Stremio: ${r.lastError}`);
+      else if (done) toast(done);
+    } catch (e: any) {
+      toast(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!st) return null;
+
+  return (
+    <section className="card">
+      <h2>Stremio account</h2>
+      {st.connected ? (
+        <>
+          <p className="small">
+            Connected{st.email ? ` as ${st.email}` : ''}. Row changes are pushed to Stremio automatically · last sync {timeAgo(st.lastSync)}.
+          </p>
+          {st.lastError && <p className="error small">Last sync failed: {st.lastError}</p>}
+          <div className="row-gap">
+            <button type="button" className="btn" disabled={busy} onClick={() => run('/api/stremio/sync', {}, 'Synced to Stremio')}>
+              Sync now
+            </button>
+            <button type="button" className="btn ghost" disabled={busy} onClick={() => run('/api/stremio/disconnect')}>
+              Disconnect
+            </button>
+          </div>
+          <p className="muted small">Each device picks up new rows the next time Stremio refreshes its addons, usually on restart.</p>
+        </>
+      ) : (
+        <>
+          <p className="muted small">
+            Lets this app update the installed addon on your account when lists are added, renamed, reordered or come into season, so
+            nobody has to reinstall. Your password is sent to Stremio once to get a session key and is not stored.
+          </p>
+          {useKey ? (
+            <label className="field">
+              <span>Auth key (from web.stremio.com: browser console, localStorage profile → auth.key)</span>
+              <input value={authKey} onChange={(e) => setAuthKey(e.target.value)} autoComplete="off" />
+            </label>
+          ) : (
+            <>
+              <label className="field">
+                <span>Stremio email</span>
+                <input type="email" autoComplete="off" value={email} onChange={(e) => setEmail(e.target.value)} />
+              </label>
+              <label className="field">
+                <span>Stremio password</span>
+                <input type="password" autoComplete="off" value={password} onChange={(e) => setPassword(e.target.value)} />
+              </label>
+            </>
+          )}
+          <div className="row-gap">
+            <button
+              type="button"
+              className="btn primary"
+              disabled={busy || (useKey ? !authKey.trim() : !email.trim() || !password)}
+              onClick={() =>
+                run('/api/stremio/connect', useKey ? { authKey } : { email, password }, 'Connected and synced to Stremio')
+              }
+            >
+              {busy ? 'Connecting…' : 'Connect'}
+            </button>
+            <button type="button" className="btn ghost" onClick={() => setUseKey((x) => !x)}>
+              {useKey ? 'Use email and password' : 'Signed in with Google or Facebook? Use an auth key'}
+            </button>
+          </div>
+        </>
+      )}
+    </section>
   );
 }

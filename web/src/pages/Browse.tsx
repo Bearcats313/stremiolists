@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { api, type MediaType, type Page, type Title } from '../api';
+import { api, type ListSummary, type MediaType, type Page, type SmartQuery, type Title } from '../api';
 import { DetailDrawer } from '../components/DetailDrawer';
 import { PosterGrid } from '../components/Poster';
-import { useSelection } from '../state';
+import { go } from '../router';
+import { useSelection, useToast } from '../state';
 
 interface Filters {
   genres: number[];
@@ -63,6 +64,7 @@ export function Browse() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [drawer, setDrawer] = useState<Title | null>(null);
+  const [savingSmart, setSavingSmart] = useState(false);
   const sel = useSelection();
   const reqId = useRef(0);
 
@@ -227,6 +229,11 @@ export function Browse() {
         <button type="button" className="btn ghost" onClick={sel.clear} disabled={!sel.items.length}>
           Clear selection
         </button>
+        {!dq && !related && countFilters(df) > 0 && (
+          <button type="button" className="btn" onClick={() => setSavingSmart(true)}>
+            Save as smart list
+          </button>
+        )}
       </div>
 
       {error && <p className="error">{error}</p>}
@@ -239,6 +246,23 @@ export function Browse() {
         onLoadMore={loadMore}
         loading={loading}
       />
+
+      {savingSmart && (
+        <SaveSmartDialog
+          query={{
+            type,
+            genres: df.genres.map((id) => ({ id, name: meta?.genres.find((g) => g.id === id)?.name ?? String(id) })),
+            keywords: df.keywords,
+            yearFrom: /^\d{4}$/.test(df.yearFrom) ? Number(df.yearFrom) : undefined,
+            yearTo: /^\d{4}$/.test(df.yearTo) ? Number(df.yearTo) : undefined,
+            certs: df.certs,
+            minRating: df.minRating ? Number(df.minRating) : undefined,
+            minVotes: df.minVotes ? Number(df.minVotes) : undefined,
+            services: df.services,
+          }}
+          onClose={() => setSavingSmart(false)}
+        />
+      )}
 
       {drawer && (
         <DetailDrawer
@@ -404,6 +428,77 @@ function FilterPanel({
           Reset filters
         </button>
       )}
+    </div>
+  );
+}
+
+export function describeQuery(q: SmartQuery): string[] {
+  const parts: string[] = [q.type === 'movie' ? 'Movies' : 'TV'];
+  parts.push(...q.genres.map((g) => g.name), ...q.keywords.map((k) => `“${k.name}”`), ...q.certs);
+  if (q.yearFrom || q.yearTo) parts.push(`${q.yearFrom ?? '…'}–${q.yearTo ?? '…'}`);
+  if (q.minRating) parts.push(`★ ${q.minRating}+`);
+  if (q.minVotes) parts.push(`${q.minVotes.toLocaleString()}+ votes`);
+  parts.push(...q.services);
+  return parts;
+}
+
+function SaveSmartDialog({ query, onClose }: { query: SmartQuery; onClose: () => void }) {
+  const [name, setName] = useState('');
+  const [limit, setLimit] = useState('50');
+  const [home, setHome] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const toast = useToast();
+
+  async function save() {
+    setBusy(true);
+    setError('');
+    try {
+      const l = await api<ListSummary>('/api/lists/smart', {
+        body: { name, query, limit: Number(limit), showOnHome: home },
+      });
+      toast(`Created ${l.name} with ${l.movieCount + l.seriesCount} titles. It refreshes every day.`);
+      go(`lists/${l.id}`);
+    } catch (e: any) {
+      setError(e.message);
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" role="dialog" aria-modal="true" aria-label="Save as smart list" onClick={(e) => e.stopPropagation()}>
+        <h2>Save as smart list</h2>
+        <p className="muted small">The list fills itself from these filters and refreshes daily. You can hide titles you don't want.</p>
+        <div className="smart-summary">
+          {describeQuery(query).map((p) => (
+            <span key={p} className="chip">
+              {p}
+            </span>
+          ))}
+        </div>
+        <label className="field">
+          <span>Name</span>
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Family comedies" autoFocus />
+        </label>
+        <label className="field">
+          <span>Number of titles (most popular first)</span>
+          <input inputMode="numeric" value={limit} onChange={(e) => setLimit(e.target.value.replace(/\D/g, '').slice(0, 3))} />
+        </label>
+        <label className="check-row">
+          <input type="checkbox" checked={home} onChange={(e) => setHome(e.target.checked)} />
+          <span>Show on the Stremio home screen</span>
+        </label>
+        {error && <p className="error">{error}</p>}
+        <div className="modal-actions">
+          <button type="button" className="btn" onClick={onClose}>
+            Cancel
+          </button>
+          <button type="button" className="btn primary" disabled={busy || !name.trim() || !Number(limit)} onClick={save}>
+            {busy ? 'Building…' : 'Save'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

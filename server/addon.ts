@@ -1,7 +1,8 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { getSetting, type MediaType } from './db.js';
-import { allLists, countStremioItems, getListBySlug, isInSeason, listItems, type ListRow } from './lists.js';
+import { allLists, countStremioItems, getListBySlug, isInSeason, listItems, type ItemRow, type ListRow } from './lists.js';
 import { IMAGE_BASE } from './tmdb.js';
+import { trendingItems, trendingOptions } from './trending.js';
 
 export const PAGE_SIZE = 100;
 const TYPES: MediaType[] = ['movie', 'series'];
@@ -12,22 +13,37 @@ function visibleLists(): ListRow[] {
   return allLists().filter((l) => !(l.system_key && HIDDEN_SYSTEM.has(l.system_key)) && isInSeason(l));
 }
 
+function stremioCount(l: ListRow, type: MediaType) {
+  return l.system_key === 'trending'
+    ? trendingItems('All', { mediaType: type, requireImdb: true, limit: 1 }).length
+    : countStremioItems(l, type);
+}
+
+export type RowGrouping = 'list' | 'type';
+export function rowGrouping(): RowGrouping {
+  return getSetting('row_grouping') === 'type' ? 'type' : 'list';
+}
+
+function catalogFor(l: ListRow, type: MediaType) {
+  // A required extra keeps a catalog off the home board, so it only shows in Discover.
+  const extra =
+    l.system_key === 'trending'
+      ? [{ name: 'genre', options: trendingOptions(), isRequired: !l.show_on_home }, { name: 'skip' }]
+      : l.show_on_home
+        ? [{ name: 'skip' }]
+        : [{ name: 'genre', options: [l.name], isRequired: true }, { name: 'skip' }];
+  return { type, id: `${l.slug}-${type}`, name: l.name, extra };
+}
+
 export function buildManifest() {
-  const catalogs: any[] = [];
-  for (const l of visibleLists()) {
-    for (const type of TYPES) {
-      if (countStremioItems(l, type) === 0) continue;
-      catalogs.push({
-        type,
-        id: `${l.slug}-${type}`,
-        name: l.name,
-        // A required extra keeps a catalog off the home board, so it only shows in Discover.
-        extra: l.show_on_home
-          ? [{ name: 'skip' }]
-          : [{ name: 'genre', options: [l.name], isRequired: true }, { name: 'skip' }],
-      });
-    }
-  }
+  const lists = visibleLists();
+  // Stremio shows rows in manifest order: either each list's movie and series rows together,
+  // or every movie row before every series row.
+  const pairs =
+    rowGrouping() === 'type'
+      ? TYPES.flatMap((type) => lists.map((l) => [l, type] as const))
+      : lists.flatMap((l) => TYPES.map((type) => [l, type] as const));
+  const catalogs = pairs.filter(([l, type]) => stremioCount(l, type) > 0).map(([l, type]) => catalogFor(l, type));
   return {
     id: 'community.personal-lists',
     version: '0.1.0',
@@ -53,7 +69,14 @@ export function catalogMetas(type: string, catalogId: string, extra: Record<stri
   const l = getListBySlug(catalogId.slice(0, -suffix.length));
   if (!l || (l.system_key && HIDDEN_SYSTEM.has(l.system_key)) || !isInSeason(l)) return [];
   const skip = Math.max(0, Number.parseInt(extra.skip ?? '0', 10) || 0);
-  return listItems(l, { mediaType: type, requireImdb: true, limit: PAGE_SIZE, offset: skip }).map((i) => ({
+  let items: ItemRow[];
+  if (l.system_key === 'trending') {
+    const service = extra.genre && extra.genre !== 'All' ? extra.genre : 'All';
+    items = trendingItems(service, { mediaType: type, requireImdb: true, limit: PAGE_SIZE, offset: skip });
+  } else {
+    items = listItems(l, { mediaType: type, requireImdb: true, limit: PAGE_SIZE, offset: skip });
+  }
+  return items.map((i) => ({
     id: i.imdb_id!,
     type,
     name: i.name ?? '',

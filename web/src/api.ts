@@ -27,6 +27,39 @@ export interface ListSummary {
   movieCount: number;
   seriesCount: number;
   missingImdbCount: number;
+  hiddenCount: number;
+  smartQuery: SmartQuery | null;
+  smartLimit: number | null;
+}
+
+export interface SmartQuery {
+  type: MediaType;
+  genres: { id: number; name: string }[];
+  keywords: { id: number; name: string }[];
+  yearFrom?: number;
+  yearTo?: number;
+  certs: string[];
+  minRating?: number;
+  minVotes?: number;
+  services: string[];
+}
+
+export interface StremioStatus {
+  connected: boolean;
+  email: string | null;
+  lastSync: number | null;
+  lastError: string | null;
+  outOfSync: boolean;
+}
+
+export function timeAgo(ms: number | null) {
+  if (!ms) return 'never';
+  const min = Math.round((Date.now() - ms) / 60_000);
+  if (min < 1) return 'just now';
+  if (min < 60) return `${min} min ago`;
+  const h = Math.round(min / 60);
+  if (h < 48) return `${h} h ago`;
+  return `${Math.round(h / 24)} days ago`;
 }
 
 export type SortMode = 'manual' | 'added' | 'year' | 'rating' | 'name';
