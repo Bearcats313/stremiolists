@@ -6,7 +6,7 @@ This is **Phase 1**: Library and custom lists, the browse/multiselect builder, p
 
 ## Deploy with Portainer
 
-1. In Portainer, add a stack from this Git repo using `docker-compose.yml`.
+1. In Portainer, add a stack from this Git repo using `docker-compose.yml`. The image is built on the host from the repo (`pull_policy: build`), so leave "Re-pull image" off; there's nothing in a registry to pull.
 2. Set environment variables on the stack:
    - `TMDB_API_KEY`: free key from https://www.themoviedb.org/settings/api (the v3 key or the v4 read access token both work)
    - `ADMIN_PASSWORD`: web UI password (only used on first run; change it later in Settings)
