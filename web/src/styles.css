@@ -855,3 +855,65 @@ input[type='checkbox'] {
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
   cursor: pointer;
 }
+
+/* ---------- Phase 2 ---------- */
+
+.drag-handle {
+  align-self: stretch;
+  width: 40px;
+  flex: none;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font-size: 1.1rem;
+  letter-spacing: -0.2em;
+  cursor: grab;
+  touch-action: none;
+}
+.list-card:has(.drag-handle) {
+  padding-left: 0;
+}
+.list-card:has(.drag-handle) .list-card-main {
+  padding-left: 0.25rem;
+}
+.rows-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  justify-content: space-between;
+  margin: 1rem 0 0.5rem;
+}
+.rows-head p {
+  margin: 0;
+}
+.sync-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.75rem;
+  margin: 0.5rem 0;
+  color: var(--muted);
+}
+.sync-status.error {
+  color: var(--danger);
+}
+.sync-status .btn {
+  min-height: 36px;
+  padding: 0.25rem 0.5rem;
+}
+.smart-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin: 0.25rem 0 0.5rem;
+}
+.smart-summary .chip {
+  cursor: default;
+}
+.service-picker {
+  width: auto;
+}
+.sync-note {
+  margin: 0.5rem 0;
+}

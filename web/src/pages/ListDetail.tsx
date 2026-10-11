@@ -11,10 +11,11 @@ import {
 import { arrayMove, rectSortingStrategy, SortableContext, sortableKeyboardCoordinates, useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { useCallback, useEffect, useState } from 'react';
-import { api, refOf, titleKey, type ListSummary, type SortMode, type Title } from '../api';
+import { api, refOf, timeAgo, titleKey, type ListSummary, type SortMode, type Title } from '../api';
 import { DetailDrawer } from '../components/DetailDrawer';
 import { PosterCard } from '../components/Poster';
 import { go } from '../router';
+import { describeQuery } from './Browse';
 import { useToast } from '../state';
 
 const SORTS: { value: SortMode; label: string }[] = [
@@ -41,8 +42,8 @@ function SortableCard(props: {
       ref={setNodeRef}
       style={{ transform: CSS.Transform.toString(transform), transition, zIndex: isDragging ? 5 : undefined }}
       className={isDragging ? 'dragging' : undefined}
-      {...attributes}
-      {...listeners}
+      // When dragging is off, skip dnd-kit's attributes: they mark the card aria-disabled, which hides the select button.
+      {...(props.disabled ? {} : { ...attributes, ...listeners })}
     >
       <PosterCard
         title={props.title}
@@ -65,21 +66,31 @@ export function ListDetail({ id }: { id: number }) {
   const [drawer, setDrawer] = useState<Title | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [target, setTarget] = useState('');
+  const [service, setService] = useState('All');
+  const [services, setServices] = useState<string[]>([]);
+  const [hidden, setHidden] = useState<Title[]>([]);
+  const [refreshedAt, setRefreshedAt] = useState<number | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
   const toast = useToast();
 
   const load = useCallback(async () => {
     try {
       const [d, all] = await Promise.all([
-        api<{ list: ListSummary; items: Title[] }>(`/api/lists/${id}`),
+        api<{ list: ListSummary; items: Title[]; hiddenItems?: Title[]; services?: string[]; refreshedAt: number | null }>(
+          `/api/lists/${id}?service=${encodeURIComponent(service)}`,
+        ),
         api<{ lists: ListSummary[] }>('/api/lists'),
       ]);
       setList(d.list);
       setItems(d.items);
+      setHidden(d.hiddenItems ?? []);
+      setServices(d.services ?? []);
+      setRefreshedAt(d.refreshedAt);
       setOthers(all.lists.filter((l) => l.editable && l.id !== id));
     } catch (e: any) {
       setError(e.message);
     }
-  }, [id]);
+  }, [id, service]);
 
   useEffect(() => {
     setSelected(new Set());
@@ -96,6 +107,13 @@ export function ListDetail({ id }: { id: number }) {
   if (!list) return <div className="spinner page" />;
 
   const shown = items.filter((t) => filter === 'all' || t.mediaType === filter);
+  const isSmart = list.kind === 'smart';
+  const isTrending = list.systemKey === 'trending';
+  // Auto-filled lists can't be edited by hand, but titles can still be copied out (and hidden from smart lists).
+  const selectable = list.editable || isSmart || isTrending;
+  // Trending shows one service at a time, so count what's on screen rather than the list-wide totals.
+  const movieCount = isTrending ? items.filter((t) => t.mediaType === 'movie').length : list.movieCount;
+  const seriesCount = isTrending ? items.length - movieCount : list.seriesCount;
   const selectedItems = items.filter((t) => selected.has(titleKey(t)));
 
   const toggle = (t: Title) =>
@@ -160,6 +178,30 @@ export function ListDetail({ id }: { id: number }) {
     }
   }
 
+  async function refresh() {
+    setRefreshing(true);
+    try {
+      await api(`/api/lists/${id}/refresh`, { method: 'POST', body: {} });
+      await load();
+      toast('Refreshed');
+    } catch (e: any) {
+      toast(e.message);
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
+  async function hide(titles: Title[], hide: boolean) {
+    try {
+      await api(`/api/lists/${id}/hide`, { body: { items: titles.map(refOf), hidden: hide } });
+      toast(hide ? `Hid ${titles.length}. They stay out when the list refreshes.` : 'Unhidden');
+      setSelected(new Set());
+      await load();
+    } catch (e: any) {
+      toast(e.message);
+    }
+  }
+
   async function duplicate() {
     try {
       const l = await api<ListSummary>(`/api/lists/${id}/duplicate`, { method: 'POST', body: {} });
@@ -188,8 +230,37 @@ export function ListDetail({ id }: { id: number }) {
           List settings
         </button>
       </div>
+      {isSmart && list.smartQuery && (
+        <div className="smart-summary">
+          {describeQuery(list.smartQuery).map((p) => (
+            <span key={p} className="chip">
+              {p}
+            </span>
+          ))}
+        </div>
+      )}
+      {(isSmart || isTrending) && (
+        <div className="row-gap">
+          {isTrending && (
+            <select className="service-picker" value={service} onChange={(e) => setService(e.target.value)} aria-label="Service">
+              {services.map((s) => (
+                <option key={s} value={s}>
+                  {s === 'All' ? 'All services' : s}
+                </option>
+              ))}
+            </select>
+          )}
+          <span className="muted small">
+            {isSmart ? 'Fills itself from these filters daily' : 'Most popular on each service, refreshed every 6 hours'} · updated{' '}
+            {timeAgo(refreshedAt)}
+          </span>
+          <button type="button" className="btn ghost" onClick={refresh} disabled={refreshing}>
+            {refreshing ? 'Refreshing…' : 'Refresh now'}
+          </button>
+        </div>
+      )}
       <p className="muted small">
-        {list.movieCount} {list.movieCount === 1 ? 'movie' : 'movies'} · {list.seriesCount} series
+        {movieCount} {movieCount === 1 ? 'movie' : 'movies'} · {seriesCount} series
         {list.archived && ' · archived'}
         {!list.archived && !list.inSeason && ' · hidden in Stremio until its start date'}
         {list.missingImdbCount > 0 && ` · ${list.missingImdbCount} without an IMDb ID won't show in Stremio`}
@@ -207,17 +278,17 @@ export function ListDetail({ id }: { id: number }) {
             </button>
           ))}
         </div>
-        <label className="field inline">
+        {!isTrending && <label className="field inline">
           <span>Sort</span>
           <select value={list.sortMode} onChange={(e) => patch({ sortMode: e.target.value })}>
             {SORTS.map((s) => (
               <option key={s.value} value={s.value}>
-                {s.label}
+                {isSmart && s.value === 'manual' ? 'Most popular first' : s.label}
               </option>
             ))}
           </select>
-        </label>
-        {list.editable && (
+        </label>}
+        {selectable && (
           <button
             type="button"
             className="btn ghost"
@@ -232,11 +303,14 @@ export function ListDetail({ id }: { id: number }) {
         <p className="muted small">Tap to select. Drag to reorder (press and hold on touch screens).</p>
       )}
 
-      {!items.length && (
-        <p className="muted">
-          Empty. Add titles from <a href="#/browse">Browse</a> or <a href="#/import">Paste import</a>.
-        </p>
-      )}
+      {!items.length &&
+        (list.editable ? (
+          <p className="muted">
+            Empty. Add titles from <a href="#/browse">Browse</a> or <a href="#/import">Paste import</a>.
+          </p>
+        ) : (
+          <p className="muted">Nothing here yet. Try Refresh now.</p>
+        ))}
 
       <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
         <SortableContext items={shown.map(titleKey)} strategy={rectSortingStrategy}>
@@ -247,7 +321,7 @@ export function ListDetail({ id }: { id: number }) {
                 title={t}
                 selected={selected.has(titleKey(t))}
                 disabled={!list.editable}
-                onToggle={() => list.editable && toggle(t)}
+                onToggle={() => selectable && toggle(t)}
                 onInfo={() => setDrawer(t)}
               />
             ))}
@@ -269,16 +343,37 @@ export function ListDetail({ id }: { id: number }) {
           <button type="button" className="btn" disabled={!target} onClick={() => transfer('copy')}>
             Copy
           </button>
-          <button type="button" className="btn" disabled={!target} onClick={() => transfer('move')}>
-            Move
-          </button>
-          <button type="button" className="btn danger" onClick={removeSelected}>
-            Remove
-          </button>
+          {list.editable && (
+            <>
+              <button type="button" className="btn" disabled={!target} onClick={() => transfer('move')}>
+                Move
+              </button>
+              <button type="button" className="btn danger" onClick={removeSelected}>
+                Remove
+              </button>
+            </>
+          )}
+          {isSmart && (
+            <button type="button" className="btn danger" onClick={() => hide(selectedItems, true)}>
+              Hide
+            </button>
+          )}
           <button type="button" className="btn ghost" onClick={() => setSelected(new Set())}>
             Clear
           </button>
         </div>
+      )}
+
+      {isSmart && hidden.length > 0 && (
+        <>
+          <h2>Hidden ({hidden.length})</h2>
+          <p className="muted small">Kept out of this list on every refresh. Tap one to bring it back.</p>
+          <div className="grid">
+            {hidden.map((t) => (
+              <PosterCard key={titleKey(t)} title={t} selected={false} onToggle={() => hide([t], false)} />
+            ))}
+          </div>
+        </>
       )}
 
       {drawer && (
@@ -310,8 +405,11 @@ function ListSettings({
   const [start, setStart] = useState(list.seasonStart ?? '');
   const [end, setEnd] = useState(list.seasonEnd ?? '');
   const isSystem = list.kind === 'system';
+  const isAuto = list.systemKey === 'trending' || list.systemKey === 'suggestions';
+  const [limit, setLimit] = useState(String(list.smartLimit ?? 50));
 
   useEffect(() => {
+    setLimit(String(list.smartLimit ?? 50));
     setName(list.name);
     setStart(list.seasonStart ?? '');
     setEnd(list.seasonEnd ?? '');
@@ -335,6 +433,24 @@ function ListSettings({
           <input type="checkbox" checked={list.showOnHome} onChange={() => onPatch({ showOnHome: !list.showOnHome })} />
           <span>Show on the Stremio home screen (otherwise only in Discover)</span>
         </label>
+      )}
+
+      {list.kind === 'smart' && (
+        <>
+          <h3>Number of titles</h3>
+          <div className="inline-form">
+            <input inputMode="numeric" value={limit} onChange={(e) => setLimit(e.target.value.replace(/\D/g, '').slice(0, 3))} />
+            <button
+              type="button"
+              className="btn"
+              disabled={!Number(limit) || Number(limit) === list.smartLimit}
+              onClick={() => onPatch({ smartLimit: Number(limit) })}
+            >
+              Save
+            </button>
+          </div>
+          <p className="muted small">Takes effect on the next refresh. To change the filters, delete this list and save a new one from Browse.</p>
+        </>
       )}
 
       {!isSystem && (
@@ -370,12 +486,16 @@ function ListSettings({
       )}
 
       <div className="row-gap">
-        <button type="button" className="btn" onClick={onDuplicate}>
-          Duplicate
-        </button>
-        <a className="btn" href={`/api/lists/${list.id}/export`} download>
-          Export JSON
-        </a>
+        {!isAuto && (
+          <>
+            <button type="button" className="btn" onClick={onDuplicate}>
+              {list.kind === 'smart' ? 'Copy as a regular list' : 'Duplicate'}
+            </button>
+            <a className="btn" href={`/api/lists/${list.id}/export`} download>
+              Export JSON
+            </a>
+          </>
+        )}
         {!isSystem && (
           <button type="button" className="btn danger" onClick={onDelete}>
             Delete list

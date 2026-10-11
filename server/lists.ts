@@ -18,6 +18,7 @@ export interface ListRow {
   archived: number;
   smart_query: string | null;
   smart_limit: number | null;
+  position: number;
   created_at: number;
 }
 
@@ -106,19 +107,35 @@ export interface ListSummary {
   movieCount: number;
   seriesCount: number;
   missingImdbCount: number;
+  hiddenCount: number;
+  smartQuery: unknown;
+  smartLimit: number | null;
 }
 
 export function toSummary(l: ListRow): ListSummary {
-  const counts = db()
-    .prepare(
-      `SELECT
-         SUM(li.media_type = 'movie') AS movies,
-         SUM(li.media_type = 'series') AS series,
-         SUM(t.imdb_id IS NULL) AS missing
-       FROM list_items li LEFT JOIN titles t ON t.tmdb_id = li.tmdb_id AND t.media_type = li.media_type
-       WHERE li.list_id = ? AND li.hidden = 0`,
-    )
-    .get(l.id) as { movies: number | null; series: number | null; missing: number | null };
+  // Trending lives in its own table, one ranking per service; count the "All" ranking.
+  const counts = (
+    l.system_key === 'trending'
+      ? db()
+          .prepare(
+            `SELECT SUM(ti.media_type = 'movie') AS movies, SUM(ti.media_type = 'series') AS series,
+                    SUM(t.imdb_id IS NULL) AS missing, 0 AS hidden
+             FROM trending_items ti LEFT JOIN titles t ON t.tmdb_id = ti.tmdb_id AND t.media_type = ti.media_type
+             WHERE ti.service = 'All'`,
+          )
+          .get()
+      : db()
+          .prepare(
+            `SELECT
+               SUM(li.hidden = 0 AND li.media_type = 'movie') AS movies,
+               SUM(li.hidden = 0 AND li.media_type = 'series') AS series,
+               SUM(li.hidden = 0 AND t.imdb_id IS NULL) AS missing,
+               SUM(li.hidden = 1) AS hidden
+             FROM list_items li LEFT JOIN titles t ON t.tmdb_id = li.tmdb_id AND t.media_type = li.media_type
+             WHERE li.list_id = ?`,
+          )
+          .get(l.id)
+  ) as { movies: number | null; series: number | null; missing: number | null; hidden: number | null };
   return {
     id: l.id,
     slug: l.slug,
@@ -135,17 +152,28 @@ export function toSummary(l: ListRow): ListSummary {
     movieCount: counts.movies ?? 0,
     seriesCount: counts.series ?? 0,
     missingImdbCount: counts.missing ?? 0,
+    hiddenCount: counts.hidden ?? 0,
+    smartQuery: l.smart_query ? JSON.parse(l.smart_query) : null,
+    smartLimit: l.smart_limit,
   };
 }
 
 export function allLists(): ListRow[] {
   return db()
-    .prepare(
-      `SELECT * FROM lists ORDER BY
-         CASE system_key WHEN 'library' THEN 0 WHEN 'trending' THEN 1 WHEN 'suggestions' THEN 2 WHEN 'watched' THEN 9 ELSE 5 END,
-         name COLLATE NOCASE`,
-    )
+    .prepare('SELECT * FROM lists ORDER BY position, id')
     .all() as ListRow[];
+}
+
+/** Set the Stremio row order. Lists not named keep their relative order after the named ones. */
+export function reorderLists(ids: number[]) {
+  const d = db();
+  const current = allLists().map((l) => l.id);
+  const known = new Set(current);
+  const given = ids.filter((id) => known.has(id));
+  const givenSet = new Set(given);
+  const ordered = [...given, ...current.filter((id) => !givenSet.has(id))];
+  const upd = d.prepare('UPDATE lists SET position = ? WHERE id = ?');
+  d.transaction(() => ordered.forEach((id, i) => upd.run(i, id)))();
 }
 
 export interface ListInput {
@@ -154,9 +182,10 @@ export interface ListInput {
   showOnHome?: boolean;
   seasonStart?: string | null;
   seasonEnd?: string | null;
+  smartLimit?: number;
 }
 
-export function createList(input: ListInput & { name: string }): ListRow {
+export function createList(input: ListInput & { name: string; smartQuery?: unknown; smartLimit?: number }): ListRow {
   const name = input.name.trim();
   if (!name) throw new ListError('List name is required');
   const start = input.seasonStart || null;
@@ -165,10 +194,23 @@ export function createList(input: ListInput & { name: string }): ListRow {
   const sort = input.sortMode && SORT_MODES.includes(input.sortMode) ? input.sortMode : 'manual';
   const info = db()
     .prepare(
-      `INSERT INTO lists (slug, name, kind, sort_mode, show_on_home, season_start, season_end, archived, created_at)
-       VALUES (?, ?, 'manual', ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO lists (slug, name, kind, sort_mode, show_on_home, season_start, season_end, archived,
+                          smart_query, smart_limit, position, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(position), -1) + 1 FROM lists), ?)`,
     )
-    .run(slugify(name), name, sort, input.showOnHome === false ? 0 : 1, start, end, end && end < today() ? 1 : 0, Date.now());
+    .run(
+      slugify(name),
+      name,
+      input.smartQuery ? 'smart' : 'manual',
+      sort,
+      input.showOnHome === false ? 0 : 1,
+      start,
+      end,
+      end && end < today() ? 1 : 0,
+      input.smartQuery ? JSON.stringify(input.smartQuery) : null,
+      input.smartQuery ? (input.smartLimit ?? 50) : null,
+      Date.now(),
+    );
   return getList(Number(info.lastInsertRowid));
 }
 
@@ -183,6 +225,11 @@ export function updateList(id: number, input: ListInput): ListRow {
   const sort = input.sortMode ?? l.sort_mode;
   if (!SORT_MODES.includes(sort)) throw new ListError('Unknown sort mode');
   const home = input.showOnHome !== undefined ? (input.showOnHome ? 1 : 0) : l.show_on_home;
+  if (input.smartLimit !== undefined && l.kind === 'smart') {
+    const limit = Math.round(Number(input.smartLimit));
+    if (!(limit >= 1 && limit <= 500)) throw new ListError('Result cap must be between 1 and 500');
+    db().prepare('UPDATE lists SET smart_limit = ? WHERE id = ?').run(limit, id);
+  }
   db()
     .prepare(
       `UPDATE lists SET name = ?, sort_mode = ?, show_on_home = ?, season_start = ?, season_end = ?, archived = ? WHERE id = ?`,
@@ -206,6 +253,9 @@ function uniqueName(base: string) {
 
 export function duplicateList(id: number): ListRow {
   const src = getList(id);
+  if (src.system_key === 'trending' || src.system_key === 'suggestions') {
+    throw new ListError(`${src.name} is filled automatically; copy titles from it instead`);
+  }
   const copy = createList({
     name: uniqueName(`${src.name} copy`),
     sortMode: src.sort_mode,
@@ -337,6 +387,17 @@ export function listItems(
     args.push(opts.limit, opts.offset ?? 0);
   }
   return db().prepare(sql).all(...args) as ItemRow[];
+}
+
+export function hiddenItems(listId: number): ItemRow[] {
+  return db()
+    .prepare(
+      `SELECT li.tmdb_id, li.media_type, li.position, li.added_at, t.imdb_id, t.name, t.year,
+              t.poster_path, t.overview, t.certification, t.tmdb_rating
+       FROM list_items li LEFT JOIN titles t ON t.tmdb_id = li.tmdb_id AND t.media_type = li.media_type
+       WHERE li.list_id = ? AND li.hidden = 1 ORDER BY t.name COLLATE NOCASE`,
+    )
+    .all(listId) as ItemRow[];
 }
 
 export function countStremioItems(l: ListRow, mediaType: MediaType): number {

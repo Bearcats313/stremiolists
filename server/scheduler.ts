@@ -4,7 +4,10 @@ import { backupDir, today } from './config.js';
 import { db, getSetting, setSetting } from './db.js';
 import { purgeExpiredSessions } from './auth.js';
 import { refreshArchived } from './lists.js';
-import { purgeExpiredCache } from './tmdb.js';
+import { refreshStaleSmartLists } from './smart.js';
+import { autoSync } from './stremio.js';
+import { purgeExpiredCache, tmdbKey } from './tmdb.js';
+import { refreshTrending, trendingStale } from './trending.js';
 
 const BACKUP_KEEP_DAYS = 14;
 const BACKUP_HOUR = 3;
@@ -35,6 +38,17 @@ async function tick(log: (msg: string, err?: unknown) => void) {
   } catch (err) {
     log('Scheduled task failed', err);
   }
+  if (tmdbKey()) {
+    if (trendingStale()) {
+      await refreshTrending().then(
+        () => log('Trending refreshed'),
+        (err) => log('Trending refresh failed', err),
+      );
+    }
+    await refreshStaleSmartLists(log);
+  }
+  // Seasonal lists coming into season, trending filling in, etc. change the rows; push them.
+  await autoSync(log);
 }
 
 export function startScheduler(log: (msg: string, err?: unknown) => void) {

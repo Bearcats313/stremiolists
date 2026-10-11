@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS lists (
   archived INTEGER NOT NULL DEFAULT 0,
   smart_query TEXT,
   smart_limit INTEGER,
+  position INTEGER,
   created_at INTEGER NOT NULL
 );
 
@@ -76,6 +77,14 @@ CREATE TABLE IF NOT EXISTS cache (
   expires_at INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS trending_items (
+  service TEXT NOT NULL,
+  media_type TEXT NOT NULL,
+  position INTEGER NOT NULL,
+  tmdb_id INTEGER NOT NULL,
+  PRIMARY KEY (service, media_type, tmdb_id)
+);
+
 CREATE TABLE IF NOT EXISTS sessions (
   id TEXT PRIMARY KEY,
   expires_at INTEGER NOT NULL
@@ -95,17 +104,40 @@ export function openDb(file: string): DB {
   d.pragma('journal_mode = WAL');
   d.pragma('foreign_keys = ON');
   d.exec(SCHEMA);
+  migrate(d);
 
   const insert = d.prepare(
     `INSERT OR IGNORE INTO lists (slug, name, kind, system_key, created_at)
      VALUES (?, ?, 'system', ?, ?)`,
   );
   for (const l of SYSTEM_LISTS) insert.run(l.slug, l.name, l.key, Date.now());
+  // New lists (including system lists on first run) start at the end of the row order.
+  d.prepare(
+    `UPDATE lists SET position = (SELECT COALESCE(MAX(position), -1) + 1 FROM lists) + id WHERE position IS NULL`,
+  ).run();
 
   instance = d;
   if (!getSetting('addon_token')) setSetting('addon_token', newToken());
   if (!getSetting('region')) setSetting('region', 'US');
   return d;
+}
+
+/** Columns added after the first release; CREATE TABLE IF NOT EXISTS won't add them to existing databases. */
+function migrate(d: DB) {
+  const cols = new Set((d.pragma('table_info(lists)') as { name: string }[]).map((c) => c.name));
+  if (!cols.has('position')) {
+    d.exec('ALTER TABLE lists ADD COLUMN position INTEGER');
+    // Keep the order existing installs already see: Library, Trending, Suggestions, then alphabetical.
+    const ids = d
+      .prepare(
+        `SELECT id FROM lists ORDER BY
+           CASE system_key WHEN 'library' THEN 0 WHEN 'trending' THEN 1 WHEN 'suggestions' THEN 2 WHEN 'watched' THEN 9 ELSE 5 END,
+           name COLLATE NOCASE`,
+      )
+      .all() as { id: number }[];
+    const upd = d.prepare('UPDATE lists SET position = ? WHERE id = ?');
+    ids.forEach((r, i) => upd.run(i, r.id));
+  }
 }
 
 export function closeDb() {

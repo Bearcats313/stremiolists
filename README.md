@@ -2,7 +2,12 @@
 
 Self-hosted Stremio addon with a web UI for building household movie and TV lists from TMDB. See `Personal Stremio Lists Addon PRD.md` for the full plan.
 
-This is **Phase 1**: Library and custom lists, the browse/multiselect builder, paste import, seasonal lists, and the addon's manifest and catalogs. Trending, smart lists, Sync to Stremio (phase 2) and suggestions (phase 3) are not built yet.
+Built so far:
+
+- **Phase 1:** Library and custom lists, the browse/multiselect builder, paste import, seasonal lists, and the addon's manifest and catalogs.
+- **Phase 2:** row ordering, a Trending row with a streaming-service filter, smart lists saved from Browse filters, and Sync to Stremio.
+
+Suggestions (phase 3) are not built yet.
 
 ## Deploy with Portainer
 
@@ -23,10 +28,15 @@ Data lives in the `lists-data` volume at `/data`: `lists.db` plus nightly backup
 ## How lists show up in Stremio
 
 - Each list becomes up to two rows, one for movies and one for series. Rows with no items are left out.
+- **My lists** sets the row order (drag ⋮⋮) and whether each list's movie and series rows sit together or all movie rows come first. Rows from other addons are ordered by Stremio's addon order, which Stremio itself can't change; community tools like Stremio Addon Manager can.
 - Titles without an IMDb ID are flagged in the web UI and skipped in Stremio. Open the title's info drawer to enter one by hand.
 - Turning off **Home** for a list keeps it in Discover only.
 - Seasonal lists show only between their dates. After the end date they move to **Archived**; set new dates to bring them back.
-- Stremio caches the addon's list of rows. Item changes in an existing list show within about five minutes, but a **new** list (or a list coming into season) needs the addon reinstalled until Sync to Stremio lands in phase 2.
+- **Trending** shows the most popular titles this week on each streaming service in the US (TMDB discover filtered by watch provider, refreshed every 6 hours). The row has a filter for each service plus All; pick which services appear in Settings.
+- **Smart lists** are saved from a set of Browse filters (Browse → Filters → Save as smart list). They refresh daily, keep the most popular N titles, and can't be edited title by title, but you can hide titles from them.
+- Stremio caches the addon's list of rows. Item changes in an existing row show within about five minutes. New, renamed, reordered or newly in-season rows need either the **Stremio account connected** in Settings, which pushes the change to the account's installed addons automatically, or a reinstall. Devices pick up a pushed change the next time Stremio refreshes its addons, usually on restart.
+
+The Stremio connection uses Stremio's unofficial account API (`api.strem.io`). The password is used once to get a session key and is not stored. If that API changes, sync stops working and the UI shows the error; reinstalling the addon still works.
 
 ## Development
 

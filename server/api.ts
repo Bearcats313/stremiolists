@@ -32,6 +32,8 @@ import {
   updateList,
   type AddReport,
   type ListInput,
+  hiddenItems,
+  reorderLists,
 } from './lists.js';
 import { ensureTitles, getTitle, insertStub, listMembership, setManualImdbId, type TitleRef } from './titles.js';
 import {
@@ -51,6 +53,20 @@ import {
   type TitleSummary,
 } from './tmdb.js';
 import { upsertTitle } from './titles.js';
+import { rowGrouping } from './addon.js';
+import { parseSmartQuery, refreshSmartList, setHidden, smartRefreshedAt } from './smart.js';
+import {
+  connectWithKey,
+  disconnectStremio,
+  scheduleAutoSync,
+  StremioError,
+  stremioLogin,
+  stremioStatus,
+  syncToStremio,
+  verifyAuthKey,
+} from './stremio.js';
+import { enabledServices, refreshTrending, setEnabledServices, trendingItems, trendingOptions } from './trending.js';
+import type { ItemRow } from './lists.js';
 
 const MAX_SELECTION = 500;
 
@@ -94,9 +110,28 @@ export function installUrls(req: FastifyRequest) {
   return { manifestUrl: manifest, stremioUrl: manifest.replace(/^https?:\/\//, 'stremio://') };
 }
 
+const itemJson = (i: ItemRow) => ({
+  tmdbId: i.tmdb_id,
+  mediaType: i.media_type,
+  name: i.name,
+  year: i.year,
+  posterPath: i.poster_path,
+  rating: i.tmdb_rating,
+  imdbId: i.imdb_id,
+  addedAt: i.added_at,
+});
+
 export function registerApiRoutes(app: FastifyInstance) {
+  const log = (msg: string, err?: unknown) => (err ? app.log.error({ err }, msg) : app.log.info(msg));
+
+  // Any successful change might alter the Stremio rows; push them if an account is connected.
+  app.addHook('onResponse', async (req, reply) => {
+    if (req.method !== 'GET' && req.url.startsWith('/api/') && reply.statusCode < 400) scheduleAutoSync(log);
+  });
+
   app.setErrorHandler((err: any, _req, reply) => {
     if (err instanceof ListError) return reply.code(err.status).send({ error: err.message });
+    if (err instanceof StremioError) return reply.code(502).send({ error: err.message });
     if (err instanceof TmdbError) {
       return reply.code(502).send({ error: err.status === 401 ? 'TMDB rejected the API key' : err.message });
     }
@@ -163,7 +198,50 @@ export function registerApiRoutes(app: FastifyInstance) {
       region: getSetting('region') || 'US',
       tmdbKeyFromEnv: !getSetting('tmdb_api_key') && !!config.envTmdbApiKey,
       lastBackup: getSetting('last_backup'),
+      rowGrouping: rowGrouping(),
+      enabledServices: enabledServices(),
+      allServices: SERVICES.map((s) => s.name),
+      trendingRefreshedAt: Number(getSetting('trending_refreshed_at')) || null,
     }));
+
+    priv.post<{ Body: { rowGrouping?: string; enabledServices?: string[] } }>('/api/settings/rows', async (req) => {
+      const b = req.body ?? {};
+      if (b.rowGrouping !== undefined) setSetting('row_grouping', b.rowGrouping === 'type' ? 'type' : 'list');
+      if (Array.isArray(b.enabledServices)) {
+        setEnabledServices(b.enabledServices.map(String));
+        // Rebuild the per-service rankings in the background; it takes a minute on a cold cache.
+        void refreshTrending().catch((err) => log('Trending refresh failed', err));
+      }
+      return { rowGrouping: rowGrouping(), enabledServices: enabledServices() };
+    });
+
+    // Stremio account, for pushing manifest changes without reinstalling
+    priv.get('/api/stremio', async () => stremioStatus());
+
+    priv.post<{ Body: { email?: string; password?: string; authKey?: string } }>('/api/stremio/connect', async (req, reply) => {
+      const b = req.body ?? {};
+      if (b.authKey?.trim()) {
+        const key = b.authKey.trim().replace(/^"|"$/g, '');
+        await verifyAuthKey(key);
+        connectWithKey(key, null);
+      } else if (b.email?.trim() && b.password) {
+        await stremioLogin(b.email.trim(), b.password);
+      } else {
+        return reply.code(400).send({ error: 'Enter your Stremio email and password, or an auth key' });
+      }
+      await syncToStremio().catch(() => {}); // the status shows any error
+      return stremioStatus();
+    });
+
+    priv.post('/api/stremio/disconnect', async () => {
+      disconnectStremio();
+      return stremioStatus();
+    });
+
+    priv.post('/api/stremio/sync', async () => {
+      const r = await syncToStremio();
+      return { ...stremioStatus(), added: r.added };
+    });
 
     priv.post<{ Body: { tmdbApiKey?: string; currentPassword?: string; newPassword?: string } }>(
       '/api/settings',
@@ -208,6 +286,8 @@ export function registerApiRoutes(app: FastifyInstance) {
       const res = await tmdbGet('/search/keyword', { query: q });
       return { results: (res.results ?? []).slice(0, 10).map((k: any) => ({ id: k.id, name: k.name })) };
     });
+
+    priv.get('/api/meta/services', async () => ({ services: trendingOptions() }));
 
     // Browse: search, discover, trending/popular
     priv.get<{ Querystring: Record<string, string | undefined> }>('/api/browse', async (req) => {
@@ -296,6 +376,46 @@ export function registerApiRoutes(app: FastifyInstance) {
     // Lists
     priv.get('/api/lists', async () => ({ lists: allLists().map(toSummary) }));
 
+    priv.post<{ Body: { ids?: unknown } }>('/api/lists/order', async (req) => {
+      if (!Array.isArray(req.body?.ids)) throw new ListError('ids must be an array');
+      reorderLists(req.body.ids.map(Number));
+      return { lists: allLists().map(toSummary) };
+    });
+
+    priv.post<{ Body: { name?: string; query?: unknown; limit?: number; showOnHome?: boolean } }>(
+      '/api/lists/smart',
+      async (req) => {
+        const query = parseSmartQuery(req.body?.query);
+        const limit = Math.round(Number(req.body?.limit ?? 50));
+        if (!(limit >= 1 && limit <= 500)) throw new ListError('Result cap must be between 1 and 500');
+        const l = createList({
+          name: String(req.body?.name ?? ''),
+          showOnHome: req.body?.showOnHome,
+          smartQuery: query,
+          smartLimit: limit,
+        });
+        await refreshSmartList(l);
+        return toSummary(getList(l.id));
+      },
+    );
+
+    priv.post<{ Params: { id: string } }>('/api/lists/:id/refresh', async (req) => {
+      const l = getList(Number(req.params.id));
+      if (l.system_key === 'trending') await refreshTrending();
+      else await refreshSmartList(l);
+      return toSummary(getList(l.id));
+    });
+
+    priv.post<{ Params: { id: string }; Body: { items?: unknown; hidden?: boolean } }>(
+      '/api/lists/:id/hide',
+      async (req) => {
+        const id = Number(req.params.id);
+        const hidden = req.body?.hidden !== false;
+        setHidden(id, asRefs(req.body?.items), hidden);
+        if (!hidden) await refreshSmartList(getList(id));
+        return toSummary(getList(id));
+      },
+    );
     priv.post<{ Body: ListInput }>('/api/lists', async (req) =>
       toSummary(createList({ ...(req.body ?? {}), name: String(req.body?.name ?? '') })),
     );
@@ -313,20 +433,23 @@ export function registerApiRoutes(app: FastifyInstance) {
       toSummary(duplicateList(Number(req.params.id))),
     );
 
-    priv.get<{ Params: { id: string } }>('/api/lists/:id', async (req) => {
+    priv.get<{ Params: { id: string }; Querystring: { service?: string } }>('/api/lists/:id', async (req) => {
       const l = getList(Number(req.params.id));
+      if (l.system_key === 'trending') {
+        const service = trendingOptions().includes(req.query.service ?? '') ? req.query.service! : 'All';
+        return {
+          list: toSummary(l),
+          items: trendingItems(service).map(itemJson),
+          services: trendingOptions(),
+          service,
+          refreshedAt: Number(getSetting('trending_refreshed_at')) || null,
+        };
+      }
       return {
         list: toSummary(l),
-        items: listItems(l).map((i) => ({
-          tmdbId: i.tmdb_id,
-          mediaType: i.media_type,
-          name: i.name,
-          year: i.year,
-          posterPath: i.poster_path,
-          rating: i.tmdb_rating,
-          imdbId: i.imdb_id,
-          addedAt: i.added_at,
-        })),
+        items: listItems(l).map(itemJson),
+        hiddenItems: l.kind === 'smart' ? hiddenItems(l.id).map(itemJson) : [],
+        refreshedAt: l.kind === 'smart' ? smartRefreshedAt(l.id) : null,
       };
     });
 
