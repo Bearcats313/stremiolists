@@ -3,6 +3,8 @@ services:
   lists:
     build: .
     image: stremio-personal-lists:latest
+    # The image is built from this repo, not pulled from a registry.
+    pull_policy: build
     container_name: stremio-lists
     restart: unless-stopped
     ports:
