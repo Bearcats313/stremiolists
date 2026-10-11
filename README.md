@@ -12,9 +12,8 @@ This is **Phase 1**: Library and custom lists, the browse/multiselect builder, p
    - `ADMIN_PASSWORD`: web UI password (only used on first run; change it later in Settings)
    - `LISTS_HOST`: the public hostname, e.g. `lists.bearcatbox.xyz`
    - `TRAEFIK_NETWORK`: the existing Docker network Traefik is on (default `proxy`)
-   - `TRAEFIK_ENTRYPOINT`: the Traefik entrypoint cloudflared forwards to (default `web`)
    - `TZ`: defaults to `America/New_York`
-3. The stack's Traefik labels route `LISTS_HOST` to the container on port 7000. Make sure the cloudflared tunnel sends that hostname to Traefik, the same way as your other services.
+3. The stack's Traefik labels match the other homelab services: `http` redirects to `https`, which serves `LISTS_HOST` with the `http` certresolver and forwards to port 7000. Make sure the cloudflared tunnel sends that hostname to Traefik, the same way as your other services.
 4. Open the hostname, log in, and go to **Settings → Install in Stremio**.
 
 If `TMDB_API_KEY` or `ADMIN_PASSWORD` is left blank, the first visit shows a setup form for them instead.
