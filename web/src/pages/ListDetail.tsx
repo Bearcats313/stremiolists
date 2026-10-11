@@ -71,12 +71,24 @@ export function ListDetail({ id }: { id: number }) {
   const [hidden, setHidden] = useState<Title[]>([]);
   const [refreshedAt, setRefreshedAt] = useState<number | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [suggestionInfo, setSuggestionInfo] = useState<{
+    seedCount: number;
+    error: string | null;
+    history: { syncedAt: number | null; error: string | null };
+  } | null>(null);
   const toast = useToast();
 
   const load = useCallback(async () => {
     try {
       const [d, all] = await Promise.all([
-        api<{ list: ListSummary; items: Title[]; hiddenItems?: Title[]; services?: string[]; refreshedAt: number | null }>(
+        api<{
+          list: ListSummary;
+          items: Title[];
+          hiddenItems?: Title[];
+          services?: string[];
+          refreshedAt: number | null;
+          suggestions?: typeof suggestionInfo;
+        }>(
           `/api/lists/${id}?service=${encodeURIComponent(service)}`,
         ),
         api<{ lists: ListSummary[] }>('/api/lists'),
@@ -86,6 +98,7 @@ export function ListDetail({ id }: { id: number }) {
       setHidden(d.hiddenItems ?? []);
       setServices(d.services ?? []);
       setRefreshedAt(d.refreshedAt);
+      setSuggestionInfo(d.suggestions ?? null);
       setOthers(all.lists.filter((l) => l.editable && l.id !== id));
     } catch (e: any) {
       setError(e.message);
@@ -109,8 +122,9 @@ export function ListDetail({ id }: { id: number }) {
   const shown = items.filter((t) => filter === 'all' || t.mediaType === filter);
   const isSmart = list.kind === 'smart';
   const isTrending = list.systemKey === 'trending';
+  const isSuggestions = list.systemKey === 'suggestions';
   // Auto-filled lists can't be edited by hand, but titles can still be copied out (and hidden from smart lists).
-  const selectable = list.editable || isSmart || isTrending;
+  const selectable = list.editable || isSmart || isTrending || isSuggestions;
   // Trending shows one service at a time, so count what's on screen rather than the list-wide totals.
   const movieCount = isTrending ? items.filter((t) => t.mediaType === 'movie').length : list.movieCount;
   const seriesCount = isTrending ? items.length - movieCount : list.seriesCount;
@@ -239,7 +253,7 @@ export function ListDetail({ id }: { id: number }) {
           ))}
         </div>
       )}
-      {(isSmart || isTrending) && (
+      {(isSmart || isTrending || isSuggestions) && (
         <div className="row-gap">
           {isTrending && (
             <select className="service-picker" value={service} onChange={(e) => setService(e.target.value)} aria-label="Service">
@@ -251,13 +265,22 @@ export function ListDetail({ id }: { id: number }) {
             </select>
           )}
           <span className="muted small">
-            {isSmart ? 'Fills itself from these filters daily' : 'Most popular on each service, refreshed every 6 hours'} · updated{' '}
-            {timeAgo(refreshedAt)}
+            {isSmart
+              ? 'Fills itself from these filters daily'
+              : isSuggestions
+                ? `Similar to ${suggestionInfo?.seedCount ?? 0} recently watched titles, minus anything watched or in the Library`
+                : 'Most popular on each service, refreshed every 6 hours'}{' '}
+            · updated {timeAgo(refreshedAt)}
           </span>
           <button type="button" className="btn ghost" onClick={refresh} disabled={refreshing}>
             {refreshing ? 'Refreshing…' : 'Refresh now'}
           </button>
         </div>
+      )}
+      {isSuggestions && suggestionInfo?.history.error && (
+        <p className="warn small">
+          Couldn't read Stremio watch history ({suggestionInfo.history.error}). Using the last known history plus the Watched list.
+        </p>
       )}
       <p className="muted small">
         {movieCount} {movieCount === 1 ? 'movie' : 'movies'} · {seriesCount} series
@@ -306,10 +329,14 @@ export function ListDetail({ id }: { id: number }) {
       {!items.length &&
         (list.editable ? (
           <p className="muted">
-            Empty. Add titles from <a href="#/browse">Browse</a> or <a href="#/import">Paste import</a>.
+            Empty. Add titles from <a href="#/browse">Browse</a> or <a href="#/import">Import</a>.
           </p>
         ) : (
-          <p className="muted">Nothing here yet. Try Refresh now.</p>
+          <p className="muted">
+            {isSuggestions
+              ? 'No suggestions yet. Connect your Stremio account in Settings, or add titles you have seen to the Watched list, then Refresh now.'
+              : 'Nothing here yet. Try Refresh now.'}
+          </p>
         ))}
 
       <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>

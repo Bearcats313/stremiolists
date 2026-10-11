@@ -74,7 +74,7 @@ function Shell() {
       <nav className="nav">
         <span className="brand">Lists</span>
         {tab('browse', 'Browse')}
-        {tab('import', 'Paste')}
+        {tab('import', 'Import')}
         {tab('lists', 'My lists')}
         {tab('settings', 'Settings')}
       </nav>
